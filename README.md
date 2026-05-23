@@ -1,15 +1,25 @@
 # @innolope/host-mcp
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server
-that lets an MCP client — Claude Code, Claude Desktop, or any other MCP
-host — inspect a remote Linux server over SSH. Covers Docker, host-level
+that lets an MCP client — Claude Code, Claude Desktop, Claude.ai connectors,
+or any other MCP host — inspect a Linux server. Covers Docker, host-level
 diagnostics (CPU, memory, disk, processes, listening sockets, port
 probes, systemd units, journal, file reads), and the two most common
 reverse proxies (nginx, Caddy).
 
-The client launches this server as a local subprocess. The server opens
-an SSH connection to the remote host you configure, runs read-only
-commands there, and returns sanitized results over stdio.
+**Two transports, two backends — mix as needed:**
+
+| Transport | Use it for                                            |
+| --------- | ----------------------------------------------------- |
+| `stdio`   | Local subprocess launched by Claude Code / Desktop.   |
+| `http`    | Public endpoint (e.g. `https://host-mcp.example.com`) for Claude.ai connectors. Bearer-token auth. |
+
+| Backend       | Use it when                                                       |
+| ------------- | ----------------------------------------------------------------- |
+| `ssh`         | host-mcp runs on machine A, inspects machine B over SSH.          |
+| `local-exec`  | host-mcp runs on the same machine it inspects. No SSH key on disk. |
+
+The backend is implicit: set `SSH_HOST` → SSH; leave it unset → local exec.
 
 **Read-only by default.** No tool starts, stops, restarts, removes,
 writes, or modifies anything. `exec_command` / `host_exec` are constrained
@@ -108,23 +118,35 @@ in your shell, in the MCP client's `env` block, or in `.env`.
 
 See [`.env.example`](.env.example) for the full list.
 
-### Required
+### Transport
 
-| Variable        | Purpose                                  |
-| --------------- | ---------------------------------------- |
-| `SSH_HOST`      | Remote host.                             |
-| `SSH_USER`      | SSH user.                                |
-| `SSH_KEY_PATH`  | Path to a private key file (preferred). |
-| `SSH_PASSWORD`  | …or a password (use a key when you can). |
+| Variable          | Purpose                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| `TRANSPORT`       | `stdio` (default) or `http`.                                       |
+| `MCP_AUTH_TOKEN`  | **Required** when `TRANSPORT=http`. Bearer token clients must send. |
+| `HTTP_PORT`       | Default `3030`.                                                    |
+| `HTTP_HOST`       | Default `127.0.0.1` — bind only to loopback; put a reverse proxy in front for TLS. |
+| `HTTP_PATH`       | Default `/mcp`.                                                    |
 
-One of `SSH_KEY_PATH` / `SSH_PASSWORD` must be set.
+### Backend
 
-### Optional
+If `SSH_HOST` is unset, host-mcp execs commands directly on its own
+machine via `child_process` — no SSH involved, no key on disk. Set
+`SSH_HOST` to use the SSH backend instead.
+
+| Variable             | When required                                |
+| -------------------- | -------------------------------------------- |
+| `SSH_HOST`           | Only when you want the SSH backend.          |
+| `SSH_USER`           | Required if `SSH_HOST` is set.               |
+| `SSH_KEY_PATH`       | Required if `SSH_HOST` is set (or `SSH_PASSWORD`). |
+| `SSH_PASSWORD`       | Alternative to `SSH_KEY_PATH`.               |
+| `SSH_PORT`           | Defaults to 22.                              |
+| `SSH_KEY_PASSPHRASE` | If the private key is encrypted.             |
+
+### Optional (everything else)
 
 | Variable                    | Purpose                                                              |
 | --------------------------- | -------------------------------------------------------------------- |
-| `SSH_PORT`                  | Defaults to 22.                                                      |
-| `SSH_KEY_PASSPHRASE`        | If the private key is encrypted.                                     |
 | `DOCKER_ENABLED`            | `true` / `false` — register the 8 Docker tools. Default `true`.      |
 | `NGINX_ENABLED`             | `true` / `false` — register `nginx_config`. Default `true`.          |
 | `CADDY_ENABLED`             | `true` / `false` — register `caddy_config`. Default `true`.          |
@@ -234,6 +256,145 @@ pass env vars.
 
 ---
 
+## Deploy as a remote MCP server (for Claude.ai connectors)
+
+Claude.ai's "Connectors" feature expects a remote MCP URL — host-mcp can
+serve that role over HTTP. The recommended topology:
+
+```
+Claude.ai (cloud)  →  HTTPS  →  Caddy (TLS terminator)  →  host-mcp on 127.0.0.1:3030
+                                                                ↓
+                                                          local-exec backend
+                                                          (this same box)
+```
+
+This avoids storing SSH keys anywhere: host-mcp inspects the host it's
+running on, directly.
+
+### 1. Pick / generate an auth token
+
+```bash
+# 32 random bytes, hex — paste into MCP_AUTH_TOKEN
+openssl rand -hex 32
+```
+
+### 2. Install Node.js 20+ and host-mcp
+
+```bash
+# Debian/Ubuntu: NodeSource
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Then install host-mcp globally so systemd can find the bin
+sudo npm install -g @innolope/host-mcp
+```
+
+### 3. Create a service user + env file
+
+```bash
+sudo useradd --system --shell /usr/sbin/nologin --home /var/lib/host-mcp host-mcp
+sudo mkdir -p /etc/host-mcp
+sudo tee /etc/host-mcp/env > /dev/null <<'EOF'
+TRANSPORT=http
+MCP_AUTH_TOKEN=PASTE_TOKEN_FROM_STEP_1
+HTTP_PORT=3030
+HTTP_HOST=127.0.0.1
+
+DOCKER_ENABLED=true
+NGINX_ENABLED=true
+CADDY_ENABLED=true
+
+# Optional: let the AI read config files / logs
+READ_FILE_ALLOWED_PREFIXES=/etc/nginx,/etc/caddy,/var/log,/etc/systemd
+
+# Optional: let the AI run mongosh inside containers
+EXEC_EXTRA_ALLOWED=mongosh
+EOF
+sudo chmod 600 /etc/host-mcp/env
+sudo chown root:root /etc/host-mcp/env
+```
+
+Add the `host-mcp` user to the `docker` group if you want Docker tools to
+work without sudo:
+
+```bash
+sudo usermod -aG docker host-mcp
+```
+
+### 4. systemd unit
+
+```bash
+sudo tee /etc/systemd/system/host-mcp.service > /dev/null <<'EOF'
+[Unit]
+Description=host-mcp (MCP server over HTTP)
+After=network.target
+
+[Service]
+Type=simple
+User=host-mcp
+EnvironmentFile=/etc/host-mcp/env
+ExecStart=/usr/bin/host-mcp
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now host-mcp
+sudo systemctl status host-mcp
+```
+
+You should see `[host-mcp] ready (http) on 127.0.0.1:3030/mcp` in the
+service log.
+
+### 5. Caddy reverse proxy + auto-TLS
+
+Add to your `Caddyfile`:
+
+```
+host-mcp.example.com {
+    reverse_proxy 127.0.0.1:3030
+}
+```
+
+Reload Caddy (`sudo systemctl reload caddy`). Caddy fetches a Let's
+Encrypt cert automatically; the endpoint is live in seconds.
+
+DNS: A record `host-mcp.example.com` → server IP.
+
+### 6. Sanity check from outside
+
+```bash
+# Health check (no auth)
+curl https://host-mcp.example.com/health
+
+# Reject without bearer
+curl -i https://host-mcp.example.com/mcp -X POST -d '{}'   # → 401
+
+# Accept with bearer
+curl -X POST https://host-mcp.example.com/mcp \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+```
+
+### 7. Wire it into Claude.ai
+
+In Claude.ai → Settings → Connectors → Add custom connector:
+- **URL:** `https://host-mcp.example.com/mcp`
+- **Authentication:** Bearer token → paste the same `MCP_AUTH_TOKEN`
+
+---
+
 ## Smoke test (without an MCP client)
 
 ```bash
@@ -301,12 +462,15 @@ npm start        # run the compiled server
 Source layout:
 
 - `src/config.ts`   — env loading and validation.
-- `src/ssh.ts`      — lazy-connecting ssh2 client with output caps and timeouts.
+- `src/runner.ts`   — `CommandRunner` interface shared by both backends.
+- `src/ssh.ts`      — lazy-connecting ssh2 client (SSH backend).
+- `src/local.ts`    — `child_process.spawn` backend.
 - `src/security.ts` — input validators, shell quoting, exec allowlist.
 - `src/result.ts`   — MCP `ToolText` helpers.
 - `src/docker.ts`   — one async function per Docker tool.
 - `src/host.ts`     — one async function per host / nginx / Caddy tool.
-- `src/index.ts`    — registers the tools on an `McpServer` over stdio.
+- `src/http.ts`     — HTTP transport + bearer-token auth.
+- `src/index.ts`    — wires everything: backend factory, transport selection, tool registration.
 
 ---
 

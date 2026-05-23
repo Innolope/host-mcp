@@ -1,7 +1,7 @@
 {
   "name": "@innolope/host-mcp",
-  "version": "0.2.0",
-  "description": "MCP server that lets MCP clients (Claude Code, Claude Desktop, etc.) inspect a remote Linux host over SSH — Docker, nginx, Caddy, systemd, ports, files.",
+  "version": "0.3.0",
+  "description": "MCP server that lets MCP clients inspect a Linux host — locally or over SSH. Stdio for local use; HTTP+bearer for remote (Claude.ai connectors). Covers Docker, nginx, Caddy, systemd, ports, files.",
   "type": "module",
   "license": "MIT",
   "author": "",

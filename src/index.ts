@@ -4,6 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { type AppConfig, loadConfig } from "./config.js";
 import { SshClient } from "./ssh.js";
+import { LocalRunner } from "./local.js";
+import type { CommandRunner } from "./runner.js";
+import { startHttpTransport } from "./http.js";
 import {
   checkDbActivity,
   containerInspect,
@@ -33,46 +36,73 @@ function errorResult(e: unknown): ToolText {
   return { content: [{ type: "text", text: msg }], isError: true };
 }
 
+function makeRunner(cfg: AppConfig): CommandRunner {
+  return cfg.ssh ? new SshClient(cfg.ssh) : new LocalRunner();
+}
+
 async function main() {
   const cfg = loadConfig();
-  const ssh = new SshClient(cfg.ssh);
+  const runner = makeRunner(cfg);
 
   const server = new McpServer({
     name: "host-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
-  if (cfg.dockerEnabled) registerDockerTools(server, ssh, cfg);
-  registerHostTools(server, ssh, cfg);
-  if (cfg.nginxEnabled) registerNginxTools(server, ssh, cfg);
-  if (cfg.caddyEnabled) registerCaddyTools(server, ssh, cfg);
+  if (cfg.dockerEnabled) registerDockerTools(server, runner, cfg);
+  registerHostTools(server, runner, cfg);
+  if (cfg.nginxEnabled) registerNginxTools(server, runner, cfg);
+  if (cfg.caddyEnabled) registerCaddyTools(server, runner, cfg);
 
   const enabled: string[] = [];
   if (cfg.dockerEnabled) enabled.push("docker");
   enabled.push("host");
   if (cfg.nginxEnabled) enabled.push("nginx");
   if (cfg.caddyEnabled) enabled.push("caddy");
-  console.error(
-    `[host-mcp] ready, tool groups: ${enabled.join(", ")}`,
-  );
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const backend = cfg.ssh
+    ? `ssh ${cfg.ssh.username}@${cfg.ssh.host}:${cfg.ssh.port}`
+    : "local exec";
 
-  const shutdown = async () => {
-    try {
-      await ssh.close();
-    } finally {
-      process.exit(0);
-    }
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  if (cfg.transport === "http") {
+    if (!cfg.http) throw new Error("http transport selected but config missing");
+    const httpServer = await startHttpTransport(server, cfg.http);
+    console.error(
+      `[host-mcp] ready (http) on ${cfg.http.host}:${cfg.http.port}${cfg.http.path} | backend: ${backend} | tools: ${enabled.join(", ")}`,
+    );
+
+    const shutdown = async () => {
+      try {
+        await new Promise<void>((r) => httpServer.close(() => r()));
+        await runner.close();
+      } finally {
+        process.exit(0);
+      }
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error(
+      `[host-mcp] ready (stdio) | backend: ${backend} | tools: ${enabled.join(", ")}`,
+    );
+
+    const shutdown = async () => {
+      try {
+        await runner.close();
+      } finally {
+        process.exit(0);
+      }
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  }
 }
 
 function registerDockerTools(
   server: McpServer,
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
 ) {
   const defaultsHint = cfg.defaultContainers.length
@@ -103,7 +133,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await listContainers(ssh, cfg, args ?? {});
+        return await listContainers(runner, cfg, args ?? {});
       } catch (e) {
         return errorResult(e);
       }
@@ -139,7 +169,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await containerLogs(ssh, cfg, args);
+        return await containerLogs(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -158,7 +188,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await containerProcesses(ssh, cfg, args);
+        return await containerProcesses(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -177,7 +207,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await containerStats(ssh, cfg, args);
+        return await containerStats(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -196,7 +226,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await containerInspect(ssh, cfg, args);
+        return await containerInspect(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -233,7 +263,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await execCommand(ssh, cfg, args);
+        return await execCommand(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -265,7 +295,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await dockerComposeStatus(ssh, cfg, args ?? {});
+        return await dockerComposeStatus(runner, cfg, args ?? {});
       } catch (e) {
         return errorResult(e);
       }
@@ -313,7 +343,7 @@ function registerDockerTools(
     },
     async (args) => {
       try {
-        return await checkDbActivity(ssh, cfg, args ?? {});
+        return await checkDbActivity(runner, cfg, args ?? {});
       } catch (e) {
         return errorResult(e);
       }
@@ -323,7 +353,7 @@ function registerDockerTools(
 
 function registerHostTools(
   server: McpServer,
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
 ) {
   server.registerTool(
@@ -336,7 +366,7 @@ function registerHostTools(
     },
     async () => {
       try {
-        return await hostStats(ssh, cfg);
+        return await hostStats(runner, cfg);
       } catch (e) {
         return errorResult(e);
       }
@@ -365,7 +395,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostProcesses(ssh, cfg, args ?? {});
+        return await hostProcesses(runner, cfg, args ?? {});
       } catch (e) {
         return errorResult(e);
       }
@@ -387,7 +417,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostListeningPorts(ssh, cfg, args ?? {});
+        return await hostListeningPorts(runner, cfg, args ?? {});
       } catch (e) {
         return errorResult(e);
       }
@@ -415,7 +445,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostSystemdStatus(ssh, cfg, args);
+        return await hostSystemdStatus(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -457,7 +487,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostJournal(ssh, cfg, args ?? {});
+        return await hostJournal(runner, cfg, args ?? {});
       } catch (e) {
         return errorResult(e);
       }
@@ -490,7 +520,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostExec(ssh, cfg, args);
+        return await hostExec(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -526,7 +556,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostCheckPort(ssh, cfg, args);
+        return await hostCheckPort(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -558,7 +588,7 @@ function registerHostTools(
     },
     async (args) => {
       try {
-        return await hostReadFile(ssh, cfg, args);
+        return await hostReadFile(runner, cfg, args);
       } catch (e) {
         return errorResult(e);
       }
@@ -568,7 +598,7 @@ function registerHostTools(
 
 function registerNginxTools(
   server: McpServer,
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
 ) {
   server.registerTool(
@@ -581,7 +611,7 @@ function registerNginxTools(
     },
     async () => {
       try {
-        return await nginxConfig(ssh, cfg, {});
+        return await nginxConfig(runner, cfg, {});
       } catch (e) {
         return errorResult(e);
       }
@@ -591,7 +621,7 @@ function registerNginxTools(
 
 function registerCaddyTools(
   server: McpServer,
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
 ) {
   server.registerTool(
@@ -604,7 +634,7 @@ function registerCaddyTools(
     },
     async () => {
       try {
-        return await caddyConfig(ssh, cfg, {});
+        return await caddyConfig(runner, cfg, {});
       } catch (e) {
         return errorResult(e);
       }

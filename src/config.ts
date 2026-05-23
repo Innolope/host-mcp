@@ -43,8 +43,19 @@ export interface SshConfig {
   password?: string;
 }
 
+export interface HttpConfig {
+  port: number;
+  host: string;
+  authToken: string;
+  path: string;
+}
+
+export type TransportMode = "stdio" | "http";
+
 export interface AppConfig {
-  ssh: SshConfig;
+  ssh: SshConfig | null;
+  transport: TransportMode;
+  http: HttpConfig | null;
   dockerEnabled: boolean;
   nginxEnabled: boolean;
   caddyEnabled: boolean;
@@ -63,31 +74,66 @@ export interface AppConfig {
   readFileMaxBytes: number;
 }
 
-export function loadConfig(): AppConfig {
+function loadSshConfig(): SshConfig | null {
+  const sshHost = optional("SSH_HOST");
+  if (!sshHost) return null;
+
   const keyPath = optional("SSH_KEY_PATH");
   const password = optional("SSH_PASSWORD");
-
   if (!keyPath && !password) {
     throw new Error(
-      "Either SSH_KEY_PATH or SSH_PASSWORD must be set in the environment.",
+      "SSH_HOST is set but neither SSH_KEY_PATH nor SSH_PASSWORD is. " +
+        "Provide one, or unset SSH_HOST to use the local-exec backend.",
     );
   }
 
-  const privateKey = keyPath ? readFileSync(keyPath) : undefined;
-
-  const ssh: SshConfig = {
-    host: required("SSH_HOST"),
+  return {
+    host: sshHost,
     port: Number(optional("SSH_PORT", "22")),
     username: required("SSH_USER"),
-    privateKey,
+    privateKey: keyPath ? readFileSync(keyPath) : undefined,
     passphrase: optional("SSH_KEY_PASSPHRASE") || undefined,
     password: password || undefined,
   };
+}
 
+function loadHttpConfig(mode: TransportMode): HttpConfig | null {
+  if (mode !== "http") return null;
+  const authToken = optional("MCP_AUTH_TOKEN");
+  if (!authToken) {
+    throw new Error(
+      "TRANSPORT=http requires MCP_AUTH_TOKEN to be set. " +
+        "Generate a long random string and treat it as a secret.",
+    );
+  }
+  const portRaw = Number(optional("HTTP_PORT", "3030"));
+  if (!Number.isInteger(portRaw) || portRaw < 1 || portRaw > 65535) {
+    throw new Error(`Invalid HTTP_PORT: ${portRaw}`);
+  }
+  return {
+    port: portRaw,
+    host: optional("HTTP_HOST", "127.0.0.1"),
+    authToken,
+    path: optional("HTTP_PATH", "/mcp"),
+  };
+}
+
+function loadTransport(): TransportMode {
+  const v = optional("TRANSPORT", "stdio").toLowerCase();
+  if (v === "stdio" || v === "http") return v;
+  throw new Error(`Invalid TRANSPORT: ${JSON.stringify(v)}. Use stdio or http.`);
+}
+
+export function loadConfig(): AppConfig {
+  const transport = loadTransport();
+  const http = loadHttpConfig(transport);
+  const ssh = loadSshConfig();
   const maxBytes = Number(optional("READ_FILE_MAX_BYTES", "1048576"));
 
   return {
     ssh,
+    transport,
+    http,
     dockerEnabled: bool("DOCKER_ENABLED", true),
     nginxEnabled: bool("NGINX_ENABLED", true),
     caddyEnabled: bool("CADDY_ENABLED", true),

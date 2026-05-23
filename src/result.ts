@@ -1,4 +1,4 @@
-import type { ExecResult } from "./ssh.js";
+import type { ExecResult } from "./runner.js";
 
 export interface ToolText {
   content: { type: "text"; text: string }[];

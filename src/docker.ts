@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import type { SshClient } from "./ssh.js";
+import type { CommandRunner } from "./runner.js";
 import { fail, formatExecError, ok, type ToolText } from "./result.js";
 import {
   assertAbsolutePath,
@@ -28,7 +28,7 @@ function redactEnvLine(line: string): string {
 }
 
 export async function listContainers(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { all?: boolean; filter?: string[] },
 ): Promise<ToolText> {
@@ -56,7 +56,7 @@ export async function listContainers(
     .filter(Boolean)
     .join(" ");
 
-  const r = await ssh.exec(cmd, { timeoutMs: 30_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 30_000 });
   if (r.code !== 0) return fail(formatExecError("docker ps", r));
 
   const lines = r.stdout.split("\n").filter((l) => l.trim() !== "");
@@ -78,7 +78,7 @@ export async function listContainers(
 }
 
 export async function containerLogs(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: {
     container: string;
@@ -99,7 +99,7 @@ export async function containerLogs(
   }
   parts.push(shellQuote(name));
 
-  const r = await ssh.exec(parts.join(" "), { timeoutMs: 60_000 });
+  const r = await runner.exec(parts.join(" "), { timeoutMs: 60_000 });
 
   const body = [
     r.stdout.trim() ? r.stdout : "",
@@ -113,18 +113,18 @@ export async function containerLogs(
 }
 
 export async function containerProcesses(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { container: string },
 ): Promise<ToolText> {
   const name = assertContainerName(args.container);
-  const r = await ssh.exec(dockerCmd(cfg, "top", name), { timeoutMs: 20_000 });
+  const r = await runner.exec(dockerCmd(cfg, "top", name), { timeoutMs: 20_000 });
   if (r.code !== 0) return fail(formatExecError("docker top", r));
   return ok(r.stdout.trim() || "(no processes)");
 }
 
 export async function containerStats(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { container: string },
 ): Promise<ToolText> {
@@ -139,7 +139,7 @@ export async function containerStats(
     shellQuote(fmt),
     shellQuote(name),
   ].join(" ");
-  const r = await ssh.exec(cmd, { timeoutMs: 20_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 20_000 });
   if (r.code !== 0) return fail(formatExecError("docker stats", r));
 
   const line = r.stdout.trim();
@@ -163,12 +163,12 @@ export async function containerStats(
 }
 
 export async function containerInspect(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { container: string },
 ): Promise<ToolText> {
   const name = assertContainerName(args.container);
-  const r = await ssh.exec(dockerCmd(cfg, "inspect", name), {
+  const r = await runner.exec(dockerCmd(cfg, "inspect", name), {
     timeoutMs: 20_000,
   });
   if (r.code !== 0) return fail(formatExecError("docker inspect", r));
@@ -189,7 +189,7 @@ export async function containerInspect(
 }
 
 export async function execCommand(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: {
     container: string;
@@ -211,7 +211,7 @@ export async function execCommand(
   parts.push(shellQuote(name), shellQuote(plan.bin));
   for (const a of plan.args) parts.push(shellQuote(a));
 
-  const r = await ssh.exec(parts.join(" "), { timeoutMs: 60_000 });
+  const r = await runner.exec(parts.join(" "), { timeoutMs: 60_000 });
   const body = [
     r.stdout,
     r.stderr.trim() ? `\n--- stderr ---\n${r.stderr}` : "",
@@ -228,7 +228,7 @@ export async function execCommand(
 }
 
 export async function dockerComposeStatus(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { project?: string; cwd?: string },
 ): Promise<ToolText> {
@@ -250,7 +250,7 @@ export async function dockerComposeStatus(
     .map(shellQuote)
     .join(" ")}`;
 
-  const r = await ssh.exec(cmd, { timeoutMs: 30_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 30_000 });
   if (r.code !== 0) return fail(formatExecError("docker compose ps", r));
 
   const text = r.stdout.trim();
@@ -271,7 +271,7 @@ export async function dockerComposeStatus(
 }
 
 export async function checkDbActivity(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: {
     container?: string;
@@ -345,7 +345,7 @@ export async function checkDbActivity(
     shellQuote(script),
   ].join(" ");
 
-  const r = await ssh.exec(cmd, { timeoutMs: 30_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 30_000 });
   if (r.code !== 0) return fail(formatExecError("mongosh", r));
 
   const lines = r.stdout

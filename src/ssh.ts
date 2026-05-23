@@ -1,18 +1,15 @@
 import { Client, type ClientChannel } from "ssh2";
 import type { SshConfig } from "./config.js";
+import {
+  MAX_OUTPUT_BYTES,
+  TRUNCATED_STDERR,
+  TRUNCATED_STDOUT,
+  type CommandRunner,
+  type ExecOpts,
+  type ExecResult,
+} from "./runner.js";
 
-export interface ExecResult {
-  stdout: string;
-  stderr: string;
-  code: number | null;
-  signal: string | null;
-}
-
-const MAX_OUTPUT_BYTES = 1_000_000;
-const TRUNCATED_STDOUT = "\n…[output truncated by host-mcp]\n";
-const TRUNCATED_STDERR = "\n…[stderr truncated by host-mcp]\n";
-
-export class SshClient {
+export class SshClient implements CommandRunner {
   private client: Client | null = null;
   private connecting: Promise<void> | null = null;
 
@@ -69,10 +66,7 @@ export class SshClient {
     return this.connecting;
   }
 
-  async exec(
-    command: string,
-    opts: { timeoutMs?: number; pty?: boolean } = {},
-  ): Promise<ExecResult> {
+  async exec(command: string, opts: ExecOpts = {}): Promise<ExecResult> {
     await this.connect();
     const client = this.client;
     if (!client) {

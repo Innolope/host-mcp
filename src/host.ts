@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import type { SshClient } from "./ssh.js";
+import type { CommandRunner } from "./runner.js";
 import { fail, formatExecError, ok, type ToolText } from "./result.js";
 import {
   assertAbsolutePath,
@@ -14,7 +14,7 @@ import {
 const SECTION = (name: string) => `\n===== ${name} =====\n`;
 
 export async function hostStats(
-  ssh: SshClient,
+  runner: CommandRunner,
   _cfg: AppConfig,
 ): Promise<ToolText> {
   // Run a fixed bundle of read-only commands in one SSH round-trip.
@@ -30,7 +30,7 @@ export async function hostStats(
     `echo "${SECTION("os-release").trim()}"; cat /etc/os-release 2>/dev/null || true`,
   ].join("; ");
 
-  const r = await ssh.exec(script, { timeoutMs: 20_000 });
+  const r = await runner.exec(script, { timeoutMs: 20_000 });
   if (r.code !== 0 && !r.stdout.trim()) {
     return fail(formatExecError("host_stats", r));
   }
@@ -38,7 +38,7 @@ export async function hostStats(
 }
 
 export async function hostProcesses(
-  ssh: SshClient,
+  runner: CommandRunner,
   _cfg: AppConfig,
   args: { limit?: number; sortBy?: "cpu" | "memory" },
 ): Promise<ToolText> {
@@ -47,13 +47,13 @@ export async function hostProcesses(
   const cmd =
     `ps -eo pid,user,pcpu,pmem,vsz,rss,etime,cmd --sort=-${sortKey} 2>/dev/null | head -n ${limit + 1}`;
 
-  const r = await ssh.exec(cmd, { timeoutMs: 15_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 15_000 });
   if (r.code !== 0) return fail(formatExecError("host_processes", r));
   return ok(r.stdout.trim() || "(no processes)");
 }
 
 export async function hostListeningPorts(
-  ssh: SshClient,
+  runner: CommandRunner,
   _cfg: AppConfig,
   args: { proto?: "tcp" | "udp" | "both" },
 ): Promise<ToolText> {
@@ -62,7 +62,7 @@ export async function hostListeningPorts(
     proto === "tcp" ? "-tlnH" : proto === "udp" ? "-ulnH" : "-tulnH";
   // ss is preferred; fall back to netstat where ss is missing.
   const cmd = `ss ${flag} 2>/dev/null || netstat -ln 2>/dev/null`;
-  const r = await ssh.exec(cmd, { timeoutMs: 15_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 15_000 });
   if (r.code !== 0 && !r.stdout.trim()) {
     return fail(formatExecError("host_listening_ports", r));
   }
@@ -70,14 +70,14 @@ export async function hostListeningPorts(
 }
 
 export async function hostSystemdStatus(
-  ssh: SshClient,
+  runner: CommandRunner,
   _cfg: AppConfig,
   args: { unit: string; lines?: number },
 ): Promise<ToolText> {
   const unit = assertSystemdUnit(args.unit);
   const lines = Math.min(Math.max(args.lines ?? 20, 0), 500);
   const cmd = `systemctl status ${shellQuote(unit)} --no-pager --lines=${lines}`;
-  const r = await ssh.exec(cmd, { timeoutMs: 15_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 15_000 });
   // systemctl returns non-zero for inactive/failed units; show output anyway.
   const body = r.stdout.trim() || r.stderr.trim();
   if (!body) return fail(formatExecError("host_systemd_status", r));
@@ -85,7 +85,7 @@ export async function hostSystemdStatus(
 }
 
 export async function hostJournal(
-  ssh: SshClient,
+  runner: CommandRunner,
   _cfg: AppConfig,
   args: {
     unit?: string;
@@ -119,7 +119,7 @@ export async function hostJournal(
     parts.push(`-p ${args.priority}`);
   }
 
-  const r = await ssh.exec(parts.join(" "), { timeoutMs: 30_000 });
+  const r = await runner.exec(parts.join(" "), { timeoutMs: 30_000 });
   if (r.code !== 0 && !r.stdout.trim()) {
     return fail(formatExecError("host_journal", r));
   }
@@ -127,7 +127,7 @@ export async function hostJournal(
 }
 
 export async function hostExec(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { command: string; args?: string[]; workdir?: string },
 ): Promise<ToolText> {
@@ -142,7 +142,7 @@ export async function hostExec(
     cmd = `cd ${shellQuote(assertAbsolutePath(args.workdir))} && ${cmd}`;
   }
 
-  const r = await ssh.exec(cmd, { timeoutMs: 60_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 60_000 });
   const body = [
     r.stdout,
     r.stderr.trim() ? `\n--- stderr ---\n${r.stderr}` : "",
@@ -159,7 +159,7 @@ export async function hostExec(
 }
 
 export async function hostReadFile(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   args: { path: string; maxBytes?: number },
 ): Promise<ToolText> {
@@ -169,26 +169,26 @@ export async function hostReadFile(
     cfg.readFileMaxBytes,
   );
   const cmd = `head -c ${cap} ${shellQuote(path)}`;
-  const r = await ssh.exec(cmd, { timeoutMs: 30_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 30_000 });
   if (r.code !== 0) return fail(formatExecError("host_read_file", r));
   return ok(r.stdout);
 }
 
 export async function nginxConfig(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   _args: Record<string, never>,
 ): Promise<ToolText> {
   // nginx -T dumps the effective config AND validates it; merge both streams
   // since the validation summary lands on stderr.
   const cmd = `${cfg.nginxBin} -T 2>&1`;
-  const r = await ssh.exec(cmd, { timeoutMs: 30_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 30_000 });
   if (r.code !== 0) return fail(formatExecError("nginx -T", r));
   return ok(r.stdout.trim() || "(empty config)");
 }
 
 export async function hostCheckPort(
-  ssh: SshClient,
+  runner: CommandRunner,
   _cfg: AppConfig,
   args: { ports: number[]; host?: string; timeoutSec?: number },
 ): Promise<ToolText> {
@@ -218,7 +218,7 @@ export async function hostCheckPort(
     `done`,
   ].join("\n");
 
-  const r = await ssh.exec(script, {
+  const r = await runner.exec(script, {
     timeoutMs: (timeoutSec + 2) * 1000 * ports.length + 5_000,
   });
   if (r.code !== 0 && !r.stdout.trim()) {
@@ -239,7 +239,7 @@ export async function hostCheckPort(
 }
 
 export async function caddyConfig(
-  ssh: SshClient,
+  runner: CommandRunner,
   cfg: AppConfig,
   _args: Record<string, never>,
 ): Promise<ToolText> {
@@ -247,7 +247,7 @@ export async function caddyConfig(
   // -w prints a sentinel line we can split off to recover the HTTP status,
   // independent of the body's structure.
   const cmd = `curl -s -m 10 -w "\\n___CADDY_HTTP_STATUS___:%{http_code}" ${shellQuote(url)}`;
-  const r = await ssh.exec(cmd, { timeoutMs: 15_000 });
+  const r = await runner.exec(cmd, { timeoutMs: 15_000 });
   if (r.code !== 0) return fail(formatExecError("curl caddy admin", r));
 
   const sentinel = r.stdout.match(/\n___CADDY_HTTP_STATUS___:(\d+)$/);
