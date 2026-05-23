@@ -1,0 +1,63 @@
+{
+  "name": "@innolope/host-mcp",
+  "version": "0.2.0",
+  "description": "MCP server that lets MCP clients (Claude Code, Claude Desktop, etc.) inspect a remote Linux host over SSH — Docker, nginx, Caddy, systemd, ports, files.",
+  "type": "module",
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/innolope/host-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/innolope/host-mcp/issues"
+  },
+  "homepage": "https://github.com/innolope/host-mcp#readme",
+  "bin": {
+    "host-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ssh",
+    "docker",
+    "nginx",
+    "caddy",
+    "systemd",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "devops",
+    "observability",
+    "remote",
+    "diagnostics"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build && chmod +x dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^17.4.2",
+    "ssh2": "^1.17.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/ssh2": "^1.15.5",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
